@@ -19,6 +19,31 @@ from autocenteralline import (
 )
 
 
+def rect_lines(x0, y0, x1, y1):
+    """矩形的 4 條 LINE 線段（順時針）。"""
+    return [
+        ((x0, y0), (x1, y0)),
+        ((x1, y0), (x1, y1)),
+        ((x1, y1), (x0, y1)),
+        ((x0, y1), (x0, y0)),
+    ]
+
+
+def rect_poly(x0, y0, x1, y1):
+    """矩形的 4 個頂點（CCW）。"""
+    return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+
+
+def first_h(lines):
+    """從 lines 中取出第一條水平線。"""
+    return next(l for l in lines if abs(l[0][1] - l[1][1]) < 1e-3)
+
+
+def first_v(lines):
+    """從 lines 中取出第一條垂直線。"""
+    return next(l for l in lines if abs(l[0][0] - l[1][0]) < 1e-3)
+
+
 class TestSnapLines:
     def test_zero_length_dropped(self):
         lines = [((1.0, 2.0), (1.0, 2.0))]
@@ -79,23 +104,13 @@ class TestPointInPolygon:
 
 
 class TestFindClosedPolygons:
-    def _rect_lines(self, x0, y0, x1, y1):
-        return [
-            ((x0, y0), (x1, y0)),
-            ((x1, y0), (x1, y1)),
-            ((x1, y1), (x0, y1)),
-            ((x0, y1), (x0, y0)),
-        ]
-
     def test_single_rectangle_gives_one_polygon(self):
-        lines = self._rect_lines(0, 0, 4, 3)
-        polys = find_closed_polygons(lines)
+        polys = find_closed_polygons(rect_lines(0, 0, 4, 3))
         assert len(polys) == 1
         assert len(polys[0]) == 4
 
     def test_two_separate_rectangles(self):
-        lines = self._rect_lines(0, 0, 2, 2) + self._rect_lines(5, 5, 7, 7)
-        polys = find_closed_polygons(lines)
+        polys = find_closed_polygons(rect_lines(0, 0, 2, 2) + rect_lines(5, 5, 7, 7))
         assert len(polys) == 2
 
     def test_triangle(self):
@@ -111,19 +126,13 @@ class TestFindClosedPolygons:
 
 
 class TestClassifyPolygons:
-    def _rect_poly(self, x0, y0, x1, y1):
-        return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
-
     def test_largest_is_outer(self):
-        outer = self._rect_poly(0, 0, 10, 10)
-        inner = self._rect_poly(1, 1, 3, 3)
-        outer_result, chambers = classify_polygons([inner, outer])
+        outer_result, chambers = classify_polygons([rect_poly(1, 1, 3, 3), rect_poly(0, 0, 10, 10)])
         assert abs(signed_area(outer_result)) == pytest.approx(100.0)
         assert len(chambers) == 1
 
     def test_outer_only_no_chambers(self):
-        outer = self._rect_poly(0, 0, 10, 10)
-        outer_result, chambers = classify_polygons([outer])
+        outer_result, chambers = classify_polygons([rect_poly(0, 0, 10, 10)])
         assert outer_result is not None
         assert chambers == []
 
@@ -133,36 +142,29 @@ class TestClassifyPolygons:
         assert chambers == []
 
     def test_three_polygons_one_outer_two_chambers(self):
-        outer = self._rect_poly(0, 0, 20, 10)
-        c1 = self._rect_poly(1, 1, 9, 9)
-        c2 = self._rect_poly(11, 1, 19, 9)
-        outer_result, chambers = classify_polygons([outer, c1, c2])
+        outer_result, chambers = classify_polygons([
+            rect_poly(0, 0, 20, 10),
+            rect_poly(1, 1, 9, 9),
+            rect_poly(11, 1, 19, 9),
+        ])
         assert abs(signed_area(outer_result)) == pytest.approx(200.0)
         assert len(chambers) == 2
 
 
 class TestLineIntersection:
     def test_cross_at_center(self):
-        l1 = ((0, 1), (2, 1))
-        l2 = ((1, 0), (1, 2))
-        pt = line_intersection(l1, l2)
+        pt = line_intersection(((0, 1), (2, 1)), ((1, 0), (1, 2)))
         assert pt == pytest.approx((1.0, 1.0))
 
     def test_parallel_no_intersection(self):
-        l1 = ((0, 0), (2, 0))
-        l2 = ((0, 1), (2, 1))
-        assert line_intersection(l1, l2) is None
+        assert line_intersection(((0, 0), (2, 0)), ((0, 1), (2, 1))) is None
 
     def test_t_junction(self):
-        l1 = ((0, 1), (2, 1))
-        l2 = ((1, 1), (1, 3))
-        pt = line_intersection(l1, l2)
+        pt = line_intersection(((0, 1), (2, 1)), ((1, 1), (1, 3)))
         assert pt == pytest.approx((1.0, 1.0))
 
     def test_non_intersecting_segments(self):
-        l1 = ((0, 0), (1, 0))
-        l2 = ((2, 0), (3, 0))
-        assert line_intersection(l1, l2) is None
+        assert line_intersection(((0, 0), (1, 0)), ((2, 0), (3, 0))) is None
 
 
 class TestPointOnSegment:
@@ -210,37 +212,28 @@ class TestPairSurfaces:
 
 
 class TestExtractCenterlines:
-    def _make_rect_poly(self, x0, y0, x1, y1):
-        return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
-
     def test_single_chamber_box(self):
         """外框 6×4，內室 4×2（各邊縮 1m）→ 6 條中心線。
         底板(y=0.5)、頂板(y=3.5)、左牆(x=0.5)、右牆(x=5.5) 各 1 條，
         再加外框底部剩餘料（x=0..1 和 x=5..6）配到外框頂蓋的左右角落段 2 條。"""
-        outer = self._make_rect_poly(0, 0, 6, 4)
-        chamber = self._make_rect_poly(1, 1, 5, 3)
-        cls = extract_centerlines(outer, [chamber])
+        cls = extract_centerlines(rect_poly(0, 0, 6, 4), [rect_poly(1, 1, 5, 3)])
         assert len(cls) == 6
 
     def test_single_chamber_full_span_h_only(self):
         """底板與頂板各 1 條（左右牆因寬度超過 max_thickness 不配對）"""
-        outer = self._make_rect_poly(0, 0, 10, 4)
-        chamber = self._make_rect_poly(0, 1, 10, 3)
-        cls = extract_centerlines(outer, [chamber], max_thickness=2.0)
+        cls = extract_centerlines(rect_poly(0, 0, 10, 4), [rect_poly(0, 1, 10, 3)],
+                                  max_thickness=2.0)
         ys = sorted({round(l[0][1], 6) for l in cls})
         assert 0.5 in ys
         assert 3.5 in ys
 
     def test_no_chambers_returns_empty(self):
-        outer = self._make_rect_poly(0, 0, 10, 5)
-        cls = extract_centerlines(outer, [])
-        assert cls == []
+        assert extract_centerlines(rect_poly(0, 0, 10, 5), []) == []
 
     def test_centerline_y_position(self):
         """水平板中心線 y 應在上下邊中間"""
-        outer = self._make_rect_poly(0, 0, 10, 4)
-        chamber = self._make_rect_poly(1, 2, 9, 3)
-        cls = extract_centerlines(outer, [chamber], max_thickness=3.0)
+        cls = extract_centerlines(rect_poly(0, 0, 10, 4), [rect_poly(1, 2, 9, 3)],
+                                  max_thickness=3.0)
         ys = sorted({round(l[0][1], 6) for l in cls})
         assert 1.0 in ys
         assert 3.5 in ys
@@ -248,19 +241,11 @@ class TestExtractCenterlines:
 
 class TestSplitAtIntersections:
     def test_cross_splits_into_4(self):
-        lines = [
-            ((0, 1), (2, 1)),
-            ((1, 0), (1, 2)),
-        ]
-        result = split_at_intersections(lines)
+        result = split_at_intersections([((0, 1), (2, 1)), ((1, 0), (1, 2))])
         assert len(result) == 4
 
     def test_no_intersection_unchanged(self):
-        lines = [
-            ((0, 0), (1, 0)),
-            ((2, 0), (3, 0)),
-        ]
-        result = split_at_intersections(lines)
+        result = split_at_intersections([((0, 0), (1, 0)), ((2, 0), (3, 0))])
         assert len(result) == 2
 
 
@@ -269,88 +254,62 @@ class TestExtendToIntersections:
 
     def test_h_extends_left_to_nearby_v(self):
         """H 中心線左端 x=2.0，V 中心線在 x=1.5（缺口 0.5 < MAX_EXTENSION）→ 延伸到 x=1.5"""
-        h_cl = ((2.0, 5.0), (8.0, 5.0))
-        v_cl = ((1.5, 3.0), (1.5, 7.0))
-
-        result = extend_to_intersections([h_cl, v_cl], max_extension=self.MAX_EXT)
-
-        h_out = next(l for l in result if abs(l[0][1] - l[1][1]) < 1e-3)
-        x_left = min(h_out[0][0], h_out[1][0])
-        assert x_left == pytest.approx(1.5)
+        result = extend_to_intersections(
+            [((2.0, 5.0), (8.0, 5.0)), ((1.5, 3.0), (1.5, 7.0))],
+            max_extension=self.MAX_EXT,
+        )
+        assert min(first_h(result)[0][0], first_h(result)[1][0]) == pytest.approx(1.5)
 
     def test_h_no_extend_when_gap_too_large(self):
         """H 中心線左端 x=5.0，V 中心線在 x=1.5（缺口 3.5 > MAX_EXTENSION）→ 不延伸"""
-        h_cl = ((5.0, 5.0), (8.0, 5.0))
-        v_cl = ((1.5, 3.0), (1.5, 7.0))
-
-        result = extend_to_intersections([h_cl, v_cl], max_extension=self.MAX_EXT)
-
-        h_out = next(l for l in result if abs(l[0][1] - l[1][1]) < 1e-3)
-        x_left = min(h_out[0][0], h_out[1][0])
-        assert x_left == pytest.approx(5.0)
+        result = extend_to_intersections(
+            [((5.0, 5.0), (8.0, 5.0)), ((1.5, 3.0), (1.5, 7.0))],
+            max_extension=self.MAX_EXT,
+        )
+        assert min(first_h(result)[0][0], first_h(result)[1][0]) == pytest.approx(5.0)
 
     def test_h_extends_when_y_just_outside_v_range(self):
         """H 中心線 y=8.0，V 中心線 y 範圍=3..7（y 超出 1.0 < MAX_EXTENSION）→ 仍延伸。
         這是放寬版 _dist_to_range 條件的核心案例：inter-chamber 步階接點的橋接邏輯。"""
-        h_cl = ((2.0, 8.0), (8.0, 8.0))
-        v_cl = ((1.5, 3.0), (1.5, 7.0))   # y 最高到 7.0，距 h 的 y=8.0 只差 1.0
-
-        result = extend_to_intersections([h_cl, v_cl], max_extension=self.MAX_EXT)
-
-        h_out = next(l for l in result if abs(l[0][1] - l[1][1]) < 1e-3)
-        x_left = min(h_out[0][0], h_out[1][0])
-        assert x_left == pytest.approx(1.5)
+        result = extend_to_intersections(
+            [((2.0, 8.0), (8.0, 8.0)), ((1.5, 3.0), (1.5, 7.0))],
+            max_extension=self.MAX_EXT,
+        )
+        assert min(first_h(result)[0][0], first_h(result)[1][0]) == pytest.approx(1.5)
 
     def test_h_no_extend_when_y_too_far_outside_v_range(self):
         """H 中心線 y=10.0，V 中心線 y 範圍=3..7（y 超出 3.0 > MAX_EXTENSION）→ 不延伸"""
-        h_cl = ((2.0, 10.0), (8.0, 10.0))
-        v_cl = ((1.5, 3.0), (1.5, 7.0))
-
-        result = extend_to_intersections([h_cl, v_cl], max_extension=self.MAX_EXT)
-
-        h_out = next(l for l in result if abs(l[0][1] - l[1][1]) < 1e-3)
-        x_left = min(h_out[0][0], h_out[1][0])
-        assert x_left == pytest.approx(2.0)
+        result = extend_to_intersections(
+            [((2.0, 10.0), (8.0, 10.0)), ((1.5, 3.0), (1.5, 7.0))],
+            max_extension=self.MAX_EXT,
+        )
+        assert min(first_h(result)[0][0], first_h(result)[1][0]) == pytest.approx(2.0)
 
     def test_v_extends_up_to_nearby_h(self):
         """V 中心線頂端 y=8.0，H 中心線在 y=8.5（缺口 0.5 < MAX_EXTENSION）→ 延伸到 y=8.5"""
-        v_cl = ((5.0, 3.0), (5.0, 8.0))
-        h_cl = ((3.0, 8.5), (7.0, 8.5))
-
-        result = extend_to_intersections([v_cl, h_cl], max_extension=self.MAX_EXT)
-
-        v_out = next(l for l in result if abs(l[0][0] - l[1][0]) < 1e-3)
-        y_top = max(v_out[0][1], v_out[1][1])
-        assert y_top == pytest.approx(8.5)
+        result = extend_to_intersections(
+            [((5.0, 3.0), (5.0, 8.0)), ((3.0, 8.5), (7.0, 8.5))],
+            max_extension=self.MAX_EXT,
+        )
+        assert max(first_v(result)[0][1], first_v(result)[1][1]) == pytest.approx(8.5)
 
     def test_v_extends_down_to_nearby_h(self):
         """V 中心線底端 y=3.0，H 中心線在 y=1.5（缺口 1.5 < MAX_EXTENSION）→ 延伸到 y=1.5"""
-        v_cl = ((5.0, 3.0), (5.0, 8.0))
-        h_cl = ((3.0, 1.5), (7.0, 1.5))
-
-        result = extend_to_intersections([v_cl, h_cl], max_extension=self.MAX_EXT)
-
-        v_out = next(l for l in result if abs(l[0][0] - l[1][0]) < 1e-3)
-        y_bottom = min(v_out[0][1], v_out[1][1])
-        assert y_bottom == pytest.approx(1.5)
+        result = extend_to_intersections(
+            [((5.0, 3.0), (5.0, 8.0)), ((3.0, 1.5), (7.0, 1.5))],
+            max_extension=self.MAX_EXT,
+        )
+        assert min(first_v(result)[0][1], first_v(result)[1][1]) == pytest.approx(1.5)
 
 
 class TestPipeline:
     """端對端：LINE 線段 → 閉合多邊形 → 中心線 → FE 模型"""
 
-    def _rect_lines(self, x0, y0, x1, y1):
-        return [
-            ((x0, y0), (x1, y0)),
-            ((x1, y0), (x1, y1)),
-            ((x1, y1), (x0, y1)),
-            ((x0, y1), (x0, y0)),
-        ]
-
     def test_single_chamber_node_and_element_count(self):
         """外框 6×4 + 內室 4×2 → 10 節點、10 桿件。
         延伸後左右牆各在 y=2.0 被角落 H 線段切開（各 2 段）；
         角落 H 線段在 x=0.5 / x=5.5 被牆切開（各 2 段）→ 共 10 桿件。"""
-        lines = self._rect_lines(0, 0, 6, 4) + self._rect_lines(1, 1, 5, 3)
+        lines = rect_lines(0, 0, 6, 4) + rect_lines(1, 1, 5, 3)
 
         snapped = snap_lines(lines)
         polygons = find_closed_polygons(snapped)

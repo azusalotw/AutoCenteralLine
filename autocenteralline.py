@@ -137,16 +137,12 @@ def classify_polygons(polygons):
 # ==========================================
 # Step 5: 抽取中心線（+/-1 表面配對 + 厚度上限）
 # ==========================================
-def extract_centerlines(outer, chambers, max_thickness=MAX_WALL_THICKNESS):
-    """通用化版本：對每個多邊形邊標上 +1/-1（牆材料側）後做雙向配對。
-    外框走 CCW、內室走 CW，使「牆材料」一致落在邊行進方向的左側。"""
-    if outer is None:
-        return []
-
+def _extract_surfaces(outer, chambers):
+    """多邊形 → (h_surfaces, v_surfaces)：對每條邊標 +1/-1（牆材料側）。
+    外框走 CCW(+area)、內室走 CW(-area)，使牆材料一致落在行進方向的左側。"""
     h_surfaces, v_surfaces = [], []
 
     def add(poly, is_outer):
-        # 標準化旋向：外框 CCW(+area)、內室 CW(-area)
         sign = signed_area(poly)
         if (is_outer and sign < 0) or ((not is_outer) and sign > 0):
             poly = poly[::-1]
@@ -168,26 +164,31 @@ def extract_centerlines(outer, chambers, max_thickness=MAX_WALL_THICKNESS):
     add(outer, is_outer=True)
     for c in chambers:
         add(c, is_outer=False)
-
-    return _pair_surfaces(h_surfaces, max_thickness, axis="h") + \
-           _pair_surfaces(v_surfaces, max_thickness, axis="v")
+    return h_surfaces, v_surfaces
 
 
-def _pair_surfaces(surfaces, max_thickness, axis):
-    """沿主軸由小到大掃描；遇 -1 時與最近 +1（≤ max_thickness）配對成中心線。"""
+def extract_centerlines(outer, chambers, max_thickness=MAX_WALL_THICKNESS):
+    """多邊形 → 中心線列表（丟棄厚度資訊）。"""
+    if outer is None:
+        return []
+    h_surfaces, v_surfaces = _extract_surfaces(outer, chambers)
+    return (_pair_surfaces(h_surfaces, max_thickness, axis="h") +
+            _pair_surfaces(v_surfaces, max_thickness, axis="v"))
+
+
+def _pair_surfaces_with_thickness(surfaces, max_thickness, axis):
+    """沿主軸掃描，配對 +1/-1 表面，回傳 [(中心線, 厚度), ...]。"""
     by_coord = defaultdict(list)
     for c, a, b, s in surfaces:
         by_coord[round(c, 4)].append((a, b, s))
     sorted_coords = sorted(by_coord.keys())
 
-    centerlines = []
+    result = []
     pending = []  # [(coord, sec_min, sec_max), ...] 累積中的 +1 表面
 
     for c in sorted_coords:
-        # 過期（距離超過厚度上限）的 pending 丟棄
         pending = [p for p in pending if c - p[0] <= max_thickness + 1e-6]
 
-        # 先處理 -1（關閉牆）
         for a, b, s in by_coord[c]:
             if s != -1:
                 continue
@@ -196,10 +197,11 @@ def _pair_surfaces(surfaces, max_thickness, axis):
                 oa, ob = max(pa, a), min(pb, b)
                 if ob > oa + 1e-6:
                     mid = (pc + c) / 2.0
+                    thickness = c - pc
                     if axis == "h":
-                        centerlines.append(((oa, mid), (ob, mid)))
+                        result.append((((oa, mid), (ob, mid)), thickness))
                     else:
-                        centerlines.append(((mid, oa), (mid, ob)))
+                        result.append((((mid, oa), (mid, ob)), thickness))
                     if pa < oa - 1e-6:
                         new_pending.append((pc, pa, oa))
                     if pb > ob + 1e-6:
@@ -208,12 +210,16 @@ def _pair_surfaces(surfaces, max_thickness, axis):
                     new_pending.append((pc, pa, pb))
             pending = new_pending
 
-        # 再處理 +1（開啟新牆）
         for a, b, s in by_coord[c]:
             if s == +1:
                 pending.append((c, a, b))
 
-    return centerlines
+    return result
+
+
+def _pair_surfaces(surfaces, max_thickness, axis):
+    """沿主軸由小到大掃描；遇 -1 時與最近 +1（≤ max_thickness）配對成中心線。"""
+    return [cl for cl, _ in _pair_surfaces_with_thickness(surfaces, max_thickness, axis)]
 
 
 # ==========================================
@@ -304,27 +310,63 @@ def build_model(centerlines, snap_tol=SNAP_TOL):
     return nodes, elements
 
 
+def build_model_with_properties(triples, snap_tol=SNAP_TOL):
+    """triples = [(centerline, label, thickness), ...]
+    回傳 (nodes, elements) 其中 elements = [(id, n1, n2, label, thickness), ...]。
+    split 後的子段繼承來源中心線的 label 與 thickness。
+    主結構桿件 ID 永遠先於月台桿件 ID（不論輸入順序）。
+    """
+    centerlines = [cl for cl, _, _ in triples]
+    sorted_triples = sorted(triples, key=lambda t: t[1] == "月台")
+    nodes = []
+    elements = []
+
+    def get_or_add_node(pt):
+        for nid, nx, ny in nodes:
+            if abs(nx - pt[0]) < snap_tol and abs(ny - pt[1]) < snap_tol:
+                return nid
+        new_id = len(nodes) + 1
+        nodes.append((new_id, pt[0], pt[1]))
+        return new_id
+
+    for line, label, thickness in sorted_triples:
+        unique = _cut_points(line, centerlines, snap_tol)
+        for k in range(len(unique) - 1):
+            n1 = get_or_add_node(unique[k])
+            n2 = get_or_add_node(unique[k + 1])
+            if n1 != n2:
+                elements.append((len(elements) + 1, n1, n2, label, thickness))
+
+    return nodes, elements
+
+
+def _cut_points(line, all_lines, tol):
+    """line 與 all_lines 的所有交點，沿主軸排序並去重後回傳。
+    自交（line 與自身）的 line_intersection denom=0 → None，安全跳過。
+    """
+    cuts = [line[0], line[1]]
+    for other in all_lines:
+        inter = line_intersection(line, other)
+        if inter and point_on_segment(inter, line, tol):
+            cuts.append(inter)
+    if abs(line[1][0] - line[0][0]) > abs(line[1][1] - line[0][1]):
+        cuts.sort(key=lambda p: p[0])
+    else:
+        cuts.sort(key=lambda p: p[1])
+    unique = [cuts[0]]
+    for p in cuts[1:]:
+        if abs(p[0] - unique[-1][0]) > tol or abs(p[1] - unique[-1][1]) > tol:
+            unique.append(p)
+    return unique
+
+
 def split_at_intersections(lines, tol=SNAP_TOL):
     """把每條線在與其他線的交點處切開。"""
     result = []
-    for i, line in enumerate(lines):
-        cuts = [line[0], line[1]]
-        for j, other in enumerate(lines):
-            if i == j:
-                continue
-            inter = line_intersection(line, other)
-            if inter and point_on_segment(inter, line, tol):
-                cuts.append(inter)
-        if abs(line[1][0] - line[0][0]) > abs(line[1][1] - line[0][1]):
-            cuts.sort(key=lambda p: p[0])
-        else:
-            cuts.sort(key=lambda p: p[1])
-        unique = [cuts[0]]
-        for p in cuts[1:]:
-            if abs(p[0] - unique[-1][0]) > tol or abs(p[1] - unique[-1][1]) > tol:
-                unique.append(p)
-        for k in range(len(unique) - 1):
-            result.append((unique[k], unique[k + 1]))
+    for line in lines:
+        pts = _cut_points(line, lines, tol)
+        for k in range(len(pts) - 1):
+            result.append((pts[k], pts[k + 1]))
     return result
 
 
@@ -354,9 +396,10 @@ def write_dxf(nodes, elements, filepath):
     doc = ezdxf.new("R2010")
     msp = doc.modelspace()
     node_dict = {nid: (x, y) for nid, x, y in nodes}
-    for eid, n1, n2 in elements:
-        msp.add_line(node_dict[n1], node_dict[n2],
-                     dxfattribs={"layer": "ANALYTICAL"})
+    for eid, n1, n2, *extra in elements:
+        label = extra[0] if extra else None
+        layer = _LABEL_TO_LAYER.get(label, "ANALYTICAL")
+        msp.add_line(node_dict[n1], node_dict[n2], dxfattribs={"layer": layer})
     for nid, x, y in nodes:
         msp.add_circle((x, y), 0.05, dxfattribs={"layer": "NODES"})
     doc.saveas(filepath)
@@ -375,10 +418,82 @@ def write_sap2000_s2k(nodes, elements, filepath):
         f.write("\n")
 
         f.write("TABLE:  \"CONNECTIVITY - FRAME\"\n")
-        for eid, n1, n2 in elements:
+        for eid, n1, n2, *_ in elements:
             f.write(f"   Frame={eid}   JointI={n1}   JointJ={n2}   "
                     f"IsCurved=No\n")
         f.write("\nEND TABLE DATA\n")
+
+
+# ==========================================
+# Step 9: 依厚度分類結構構件
+# ==========================================
+PLATFORM_THICKNESS_THRESHOLD = 0.2  # 月台厚度上限（公尺）
+
+
+def classify_by_thickness(thickness, threshold=PLATFORM_THICKNESS_THRESHOLD):
+    """依厚度分類構件：≤ threshold → '月台'；其餘 → '主結構'。"""
+    return "月台" if thickness <= threshold else "主結構"
+
+
+def classify_centerlines(centerlines_with_thickness,
+                         threshold=PLATFORM_THICKNESS_THRESHOLD):
+    """將 [(中心線, 厚度), ...] 批次分類，回傳 [(中心線, 分類字串), ...]。"""
+    return [(cl, classify_by_thickness(t, threshold))
+            for cl, t in centerlines_with_thickness]
+
+
+def classify_centerlines_full(centerlines_with_thickness,
+                               threshold=PLATFORM_THICKNESS_THRESHOLD):
+    """批次分類並保留厚度，回傳 [(中心線, 分類字串, 厚度), ...]。"""
+    return [(cl, classify_by_thickness(t, threshold), t)
+            for cl, t in centerlines_with_thickness]
+
+
+def extract_centerlines_with_thickness(outer, chambers,
+                                       max_thickness=MAX_WALL_THICKNESS):
+    """多邊形 → [(中心線, 厚度), ...] 供 classify_centerlines 使用。"""
+    if outer is None:
+        return []
+    h_surfaces, v_surfaces = _extract_surfaces(outer, chambers)
+    return (_pair_surfaces_with_thickness(h_surfaces, max_thickness, axis="h") +
+            _pair_surfaces_with_thickness(v_surfaces, max_thickness, axis="v"))
+
+
+def classify_centerlines_from_geometry(outer, chambers,
+                                       max_thickness=MAX_WALL_THICKNESS,
+                                       threshold=PLATFORM_THICKNESS_THRESHOLD):
+    """多邊形幾何直接回傳帶分類標籤的中心線 [(中心線, '月台'|'主結構'), ...]。"""
+    return classify_centerlines(
+        extract_centerlines_with_thickness(outer, chambers, max_thickness),
+        threshold=threshold,
+    )
+
+
+def classify_centerlines_from_geometry_full(outer, chambers,
+                                            max_thickness=MAX_WALL_THICKNESS,
+                                            threshold=PLATFORM_THICKNESS_THRESHOLD):
+    """多邊形幾何直接回傳三元組 [(中心線, 分類字串, 厚度), ...]。"""
+    return classify_centerlines_full(
+        extract_centerlines_with_thickness(outer, chambers, max_thickness),
+        threshold=threshold,
+    )
+
+
+_LABEL_TO_LAYER = {
+    "月台": "PLATFORM",
+    "主結構": "MAIN_STRUCTURE",
+}
+
+
+def write_dxf_classified(labeled_centerlines, filepath):
+    """將帶分類標籤的中心線輸出為 DXF，依標籤分層：
+    '月台' → layer='PLATFORM'，'主結構' → layer='MAIN_STRUCTURE'。"""
+    doc = ezdxf.new("R2010")
+    msp = doc.modelspace()
+    for (p1, p2), label in labeled_centerlines:
+        layer = _LABEL_TO_LAYER.get(label, "ANALYTICAL")
+        msp.add_line(p1, p2, dxfattribs={"layer": layer})
+    doc.saveas(filepath)
 
 
 # ==========================================
@@ -424,16 +539,25 @@ if __name__ == "__main__":
     print(f"外框頂點數: {len(outer)}")
     print(f"內室: {len(chambers)} 個")
 
-    raw_cls = extract_centerlines(outer, chambers)
-    print(f"原始中心線 {len(raw_cls)} 條")
+    # 取得帶厚度與分類的中心線三元組
+    triples = classify_centerlines_from_geometry_full(outer, chambers)
+    print(f"原始中心線 {len(triples)} 條")
 
-    centerlines = raw_cls
-    for _ in range(3):          # 多輪延伸：讓步階接點收斂
-        centerlines = extend_to_intersections(centerlines)
-    print(f"延伸後 {len(centerlines)} 條")
+    # 延伸端點（保留 label/thickness：extend 不改變條數與順序）
+    cls = [cl for cl, _, _ in triples]
+    props = [(label, t) for _, label, t in triples]
+    for _ in range(3):
+        cls = extend_to_intersections(cls)
+    triples_ext = [(cl, label, t) for cl, (label, t) in zip(cls, props)]
+    print(f"延伸後 {len(triples_ext)} 條")
 
-    nodes, elements = build_model(centerlines)
+    nodes, elements = build_model_with_properties(triples_ext)
     print(f"節點 {len(nodes)} 個, 桿件 {len(elements)} 條")
+    print()
+    print(f"{'桿件ID':>6}  {'節點1':>5}  {'節點2':>5}  {'類型':>6}  {'厚度(m)':>8}")
+    print("-" * 42)
+    for eid, n1, n2, label, thickness in elements:
+        print(f"{eid:>6}  {n1:>5}  {n2:>5}  {label:>6}  {thickness:>8.3f}")
 
     # 根據輸入的檔案路徑，產生輸出檔名
     base_name = os.path.splitext(file_path)[0]
@@ -442,4 +566,4 @@ if __name__ == "__main__":
 
     write_dxf(nodes, elements, out_dxf)
     write_sap2000_s2k(nodes, elements, out_s2k)
-    print(f"完成！已輸出:\n  - {out_dxf}\n  - {out_s2k}")
+    print(f"\n完成！已輸出:\n  - {out_dxf}\n  - {out_s2k}")
