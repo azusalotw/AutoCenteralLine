@@ -3,9 +3,16 @@
 *.dwl2
 *.s2k
 *.bak
+*.csv
+*.xlsx
+*.spec
 .venv
 .pytest_cache
 .env
 .vscode
 __pycache__
 docs/tdd
+outputs/
+samples/
+dist/
+build/

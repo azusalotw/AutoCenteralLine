@@ -3,7 +3,7 @@ autocenteralline.py 單元測試
 執行：pytest test_autocenteralline.py -v
 """
 import pytest
-from autocenteralline import (
+from main import (
     snap_lines,
     signed_area,
     point_in_polygon,
