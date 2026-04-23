@@ -23,6 +23,7 @@ from core.centerline import (  # noqa: F401
     extract_centerlines, extract_centerlines_with_thickness,
     extend_to_intersections,
     _pair_surfaces,
+    merge_colinear_centerlines, filter_short_centerlines,
 )
 from core.classify import (  # noqa: F401
     classify_by_thickness,
@@ -129,6 +130,11 @@ class AutoCenterlineApp(tk.Tk):
             # 取得帶厚度與分類的中心線三元組
             triples = classify_centerlines_from_geometry_full(outer, chambers)
             self.log(f"原始中心線 {len(triples)} 條")
+
+            # 後處理：合併碎片 + 過濾極短殘餘
+            triples = merge_colinear_centerlines(triples)
+            triples = filter_short_centerlines(triples)
+            self.log(f"合併/過濾後 {len(triples)} 條")
 
             # 延伸端點（保留 label/thickness：extend 不改變條數與順序）
             cls = [cl for cl, _, _ in triples]

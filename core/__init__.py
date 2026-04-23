@@ -20,6 +20,7 @@ from core.polygon import (
 from core.centerline import (
     extract_centerlines, extract_centerlines_with_thickness,
     extend_to_intersections,
+    merge_colinear_centerlines, filter_short_centerlines,
 )
 from core.classify import (
     classify_by_thickness,

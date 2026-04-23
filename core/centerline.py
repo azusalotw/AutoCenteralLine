@@ -2,7 +2,7 @@
 
 from collections import defaultdict
 
-from .constants import SNAP_TOL, MAX_WALL_THICKNESS, MAX_EXTENSION
+from .constants import SNAP_TOL, MAX_WALL_THICKNESS, MAX_EXTENSION, PLATFORM_THICKNESS_THRESHOLD
 from .geometry import signed_area
 
 
@@ -196,3 +196,110 @@ def extend_to_intersections(centerlines, max_extension=MAX_EXTENSION,
     for vi, vl in v_lines:
         out[vi] = _extend_line(vl, h_lines_updated, "v", max_extension, tol)
     return out
+
+
+# ==========================================
+# 中心線後處理：合併碎片、過濾殘餘
+# ==========================================
+def _cl_length(cl):
+    """中心線長度。"""
+    return ((cl[1][0] - cl[0][0]) ** 2 + (cl[1][1] - cl[0][1]) ** 2) ** 0.5
+
+
+def merge_colinear_centerlines(triples, gap_tol=None):
+    """合併同軸、同標籤、間隙 ≤ gap_tol 的中心線碎片。
+
+    triples = [(centerline, label, thickness), ...]
+    同一軸向（H 或 V）、同一固定座標、同一 label 的中心線，
+    若按主軸排序後相鄰間隙 ≤ gap_tol，則合併為一條。
+    合併後 thickness 取加權平均（按長度加權）。
+    """
+    if gap_tol is None:
+        gap_tol = PLATFORM_THICKNESS_THRESHOLD + SNAP_TOL
+
+    from collections import defaultdict
+    tol = SNAP_TOL
+
+    # 分組：(方向, 固定座標(rounded), label)
+    groups = defaultdict(list)
+    for cl, label, thickness in triples:
+        dx = abs(cl[1][0] - cl[0][0])
+        dy = abs(cl[1][1] - cl[0][1])
+        if dy < tol and dx > tol:  # 水平
+            fixed = round((cl[0][1] + cl[1][1]) / 2, 3)
+            a, b = sorted([cl[0][0], cl[1][0]])
+            groups[("h", fixed, label)].append((a, b, thickness))
+        elif dx < tol and dy > tol:  # 垂直
+            fixed = round((cl[0][0] + cl[1][0]) / 2, 3)
+            a, b = sorted([cl[0][1], cl[1][1]])
+            groups[("v", fixed, label)].append((a, b, thickness))
+        else:
+            # 非正交線段，原樣保留
+            groups[("other", id(cl), label)].append((cl, thickness))
+
+    result = []
+    for (axis, fixed, label), segs in groups.items():
+        if axis == "other":
+            for cl, t in segs:
+                result.append((cl, label, t))
+            continue
+
+        # 按主軸起點排序
+        segs.sort(key=lambda s: s[0])
+        merged = []
+        cur_a, cur_b, cur_t, cur_len = segs[0][0], segs[0][1], segs[0][2], segs[0][1] - segs[0][0]
+        for a, b, t in segs[1:]:
+            gap = a - cur_b
+            if gap <= gap_tol + tol:
+                # 合併：thickness 按長度加權平均
+                new_len = b - a
+                total_len = cur_len + new_len
+                cur_t = (cur_t * cur_len + t * new_len) / total_len if total_len > 0 else cur_t
+                cur_len = total_len
+                cur_b = max(cur_b, b)
+            else:
+                merged.append((cur_a, cur_b, cur_t))
+                cur_a, cur_b, cur_t, cur_len = a, b, t, b - a
+        merged.append((cur_a, cur_b, cur_t))
+
+        for a, b, t in merged:
+            if axis == "h":
+                result.append((((a, fixed), (b, fixed)), label, t))
+            else:
+                result.append((((fixed, a), (fixed, b)), label, t))
+
+    return result
+
+
+def filter_short_centerlines(triples, min_length=None):
+    """過濾孤立的極短中心線（表面配對在 notch 間隙產生的殘餘碎片）。
+
+    只移除「孤兒」短段：同一軸向、同一固定座標上全部都是短段時才移除。
+    若同位置有長段共存（如垂直柱的短段與長段），則保留。
+    """
+    if min_length is None:
+        min_length = PLATFORM_THICKNESS_THRESHOLD + SNAP_TOL
+    tol = SNAP_TOL
+
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for i, (cl, label, thickness) in enumerate(triples):
+        dx = abs(cl[1][0] - cl[0][0])
+        dy = abs(cl[1][1] - cl[0][1])
+        length = _cl_length(cl)
+        if dy < tol and dx > tol:  # 水平
+            fixed = round((cl[0][1] + cl[1][1]) / 2, 3)
+            groups[("h", fixed)].append((i, length))
+        elif dx < tol and dy > tol:  # 垂直
+            fixed = round((cl[0][0] + cl[1][0]) / 2, 3)
+            groups[("v", fixed)].append((i, length))
+
+    to_remove = set()
+    for members in groups.values():
+        has_long = any(ln > min_length for _, ln in members)
+        if not has_long:
+            # 同位置全為短段 → 視為殘餘碎片，全部移除
+            for idx, _ in members:
+                to_remove.add(idx)
+
+    return [t for i, t in enumerate(triples) if i not in to_remove]

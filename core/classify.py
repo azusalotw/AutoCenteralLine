@@ -6,7 +6,7 @@ from .centerline import extract_centerlines_with_thickness
 
 def classify_by_thickness(thickness, threshold=PLATFORM_THICKNESS_THRESHOLD):
     """依厚度分類構件：≤ threshold → '月台'；其餘 → '主結構'。"""
-    return "月台" if thickness <= threshold else "主結構"
+    return "月台" if thickness <= threshold + 1e-6 else "主結構"
 
 
 def classify_centerlines(centerlines_with_thickness,

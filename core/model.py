@@ -100,7 +100,26 @@ def build_model_with_properties(triples, snap_tol=SNAP_TOL):
                      for line, _, _ in sorted_triples]
 
     raw_pts = _collect_unique_points(cuts_per_line, snap_tol)
-    nodes = [(i + 1, p[0], p[1]) for i, p in enumerate(raw_pts)]
+
+    # 將節點分為「主結構（含共用）」與「純月台」
+    # 規則：若節點位在水平「月台」桿件上，或是「只」位於月台桿件上，則視為月台節點，並編號在最後。
+    plat_h_lines = [line for line, lbl, _ in sorted_triples 
+                    if lbl == "月台" and abs(line[0][1] - line[1][1]) < snap_tol]
+    main_lines = [line for line, lbl, _ in sorted_triples if lbl != "月台"]
+    
+    main_pts = []
+    plat_pts = []
+    for pt in raw_pts:
+        on_plat_h = any(point_on_segment(pt, ln, snap_tol) for ln in plat_h_lines)
+        on_main = any(point_on_segment(pt, ln, snap_tol) for ln in main_lines)
+        
+        if on_plat_h or not on_main:
+            plat_pts.append(pt)
+        else:
+            main_pts.append(pt)
+
+    ordered_pts = main_pts + plat_pts
+    nodes = [(i + 1, p[0], p[1]) for i, p in enumerate(ordered_pts)]
 
     horizontals, verticals, node_pos = _collect_elements(
         sorted_triples, cuts_per_line, nodes, snap_tol)
