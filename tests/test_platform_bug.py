@@ -114,7 +114,8 @@ class TestFilterShortCenterlines:
             (((21.2, 4.05), (21.2, 8.6)), "主結構", 1.8),   # 長段
         ]
         filtered = filter_short_centerlines(cls, min_length=0.3)
-        assert len(filtered) == 2
+        # 短段 (0.05) 小於厚度 (1.8)，依據 aspect ratio 規則會被過濾
+        assert len(filtered) == 1
 
     def test_normal_segment_kept(self):
         """正常長度的中心線不被過濾。"""
@@ -122,6 +123,16 @@ class TestFilterShortCenterlines:
         cls = [(((0.0, 1.0), (5.0, 1.0)), "主結構", 2.0)]
         filtered = filter_short_centerlines(cls, min_length=0.3)
         assert len(filtered) == 1
+
+    def test_short_end_segment_nearly_as_thick_as_long_is_kept(self):
+        """短端部桿件只比厚度略短時仍應保留。"""
+        from core.centerline import filter_short_centerlines
+        cls = [
+            (((-12.25, 72.9), (-10.9, 72.9)), "主結構", 1.4),
+            (((-8.2, 72.9), (-0.9, 72.9)), "主結構", 1.4),
+        ]
+        filtered = filter_short_centerlines(cls, min_length=0.3)
+        assert len(filtered) == 2
 
 
 class TestEProfileIntegration:
@@ -187,3 +198,24 @@ class TestEProfileIntegration:
         for nid, x, y in platform_nodes:
             assert y == pytest.approx(3.900), f"N{nid} 不在月台 y=3.900 上"
             assert nid >= 25, f"N{nid} 編號應 >= 25"
+
+
+class TestBProfileIntegration:
+    """整合測試：B剖短端部桿件不應被 aspect ratio 過濾誤刪。"""
+
+    def test_top_left_short_member_is_kept(self):
+        raw = read_dxf_lines("samples/B剖-分析.dxf")
+        snapped = snap_lines(raw)
+        polygons = find_closed_polygons(snapped)
+        outer, chambers = classify_polygons(polygons)
+        triples = classify_centerlines_from_geometry_full(outer, chambers)
+        triples = merge_colinear_centerlines(triples)
+        triples = filter_short_centerlines(triples)
+
+        assert any(
+            abs(cl[0][1] - 72.9) < 0.01
+            and abs(cl[1][1] - 72.9) < 0.01
+            and min(cl[0][0], cl[1][0]) == pytest.approx(-12.25)
+            and max(cl[0][0], cl[1][0]) == pytest.approx(-10.9)
+            for cl, _, _ in triples
+        )

@@ -168,6 +168,28 @@ class TestBuildModelWithProperties:
         platform_ids = [eid for eid, _, _, lbl, _ in elements if lbl == "月台"]
         assert max(main_ids) < min(platform_ids)
 
+    def test_platform_nodes_ordered_left_to_right_even_with_small_y_offset(self):
+        """月台節點需依 x 由左到右編號，不受微小 y 差影響。"""
+        cl_right = ((3.0, 0.0), (4.0, 0.0))
+        cl_left = ((0.0, 0.01), (2.0, 0.01))
+        triples = [(cl_right, "月台", 0.1), (cl_left, "月台", 0.1)]
+        nodes, _ = build_model_with_properties(triples)
+
+        xs_by_id = [x for _, x, _ in nodes]
+        assert xs_by_id == sorted(xs_by_id)
+
+    def test_platform_horizontal_elements_ordered_left_to_right_even_with_small_y_offset(self):
+        """月台水平桿件需依中點 x 由左到右編號，不受微小 y 差影響。"""
+        cl_right = ((3.0, 0.0), (4.0, 0.0))
+        cl_left = ((0.0, 0.01), (2.0, 0.01))
+        triples = [(cl_right, "月台", 0.1), (cl_left, "月台", 0.1)]
+        nodes, elements = build_model_with_properties(triples)
+
+        node_pos = {nid: (x, y) for nid, x, y in nodes}
+        mid_xs = [(node_pos[n1][0] + node_pos[n2][0]) / 2
+                  for _, n1, n2, lbl, _ in elements if lbl == "月台"]
+        assert mid_xs == sorted(mid_xs)
+
 
 class TestSpatialOrdering:
     def test_nodes_ordered_bottom_row_first_then_left_to_right(self):
@@ -227,26 +249,25 @@ class TestSpatialOrdering:
 
 class TestExtractCenterlinesWithThickness:
     def test_geometry_produces_thickness_pairs(self):
-        """整合：外框 6×4 + 內室各邊 1m 厚，max_thickness=2.0 → 4 條主構件厚度均為 1.0m。
-        不加 max_thickness 則角落殘餘段會與外框對側配對得厚度 4.0m（此為正確演算法行為，
-        測試此處明確給定上限以隔離主構件）。"""
+        """產生配對並帶有厚度。不再受限於 max_thickness。"""
         outer = [(0.0, 0.0), (6.0, 0.0), (6.0, 4.0), (0.0, 4.0)]
         inner = [(1.0, 1.0), (5.0, 1.0), (5.0, 3.0), (1.0, 3.0)]
-        pairs = extract_centerlines_with_thickness(outer, [inner], max_thickness=2.0)
+        pairs = extract_centerlines_with_thickness(outer, [inner])
         thicknesses = [t for _, t in pairs]
-        assert all(t == pytest.approx(1.0) for t in thicknesses)
+        # 水平和垂直各有兩條，厚度皆為 1.0
+        assert thicknesses.count(pytest.approx(1.0)) == 4
 
 
 class TestWriteAnalyticalXlsx:
     def test_creates_three_sheets_with_correct_names(self, tmp_path):
         """write_analytical_xlsx 建立含 3 個 sheet 的 xlsx：
-        依序為 'C.結構點位'、'D.桿件編號'、'E.桿件資訊'。"""
+        分別為 'A.節點資訊', 'B.桿件資訊', 'E.邊界'。"""
         nodes = [(1, 0.0, 0.0), (2, 4.0, 0.0)]
         elements = [(1, 1, 2, "主結構", 0.5)]
         out = str(tmp_path / "test.xlsx")
         write_analytical_xlsx(nodes, elements, out)
         wb = openpyxl.load_workbook(out)
-        assert wb.sheetnames == ["C.結構點位", "D.桿件編號", "E.桿件資訊"]
+        assert wb.sheetnames == ["A.本案資訊", "B.基本資訊", "C.結構點位", "D.桿件編號", "E.桿件資訊"]
 
     def test_node_coordinates_normalized_to_min_xy_as_origin(self, tmp_path):
         """C.結構點位：以最左下角 (min_x, min_y) 為原點 (0,0) 輸出座標。

@@ -152,20 +152,17 @@ class AutoCenterlineApp(tk.Tk):
             for eid, n1, n2, label, thickness in elements:
                 self.log(f"{eid:>6}  {n1:>5}  {n2:>5}  {label:>6}  {thickness:>8.3f}")
 
-            # 根據輸入的檔案路徑，產生輸出檔名並存入 outputs/ 資料夾
+            # 根據輸入的檔案路徑，設定輸出目錄為輸入檔案所在的資料夾
+            out_dir = os.path.dirname(file_path)
             input_filename = os.path.basename(file_path)
             base_name = os.path.splitext(input_filename)[0]
             
-            out_dir = "outputs"
-            if not os.path.exists(out_dir):
-                os.makedirs(out_dir)
-                
             out_dxf = os.path.join(out_dir, f"{base_name}_analytical.dxf")
             out_xlsx = os.path.join(out_dir, f"{base_name}_analytical.xlsx")
 
             write_dxf(nodes, elements, out_dxf)
             write_analytical_xlsx(nodes, elements, out_xlsx)
-            self.log(f"\n完成！已輸出至 {out_dir}/:\n  - {os.path.basename(out_dxf)}\n  - {os.path.basename(out_xlsx)}")
+            self.log(f"\n完成！已輸出至:\n  - {out_dxf}\n  - {out_xlsx}")
 
         except Exception as e:
             self.log(f"發生錯誤:\n{traceback.format_exc()}")

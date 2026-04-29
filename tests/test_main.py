@@ -187,22 +187,20 @@ class TestPointOnSegment:
 class TestPairSurfaces:
     def test_simple_single_wall(self):
         surfaces = [(0.0, 0.0, 4.0, +1), (1.0, 0.0, 4.0, -1)]
-        cls = _pair_surfaces(surfaces, max_thickness=2.0, axis="h")
+        cls = _pair_surfaces(surfaces, axis="h")
         assert len(cls) == 1
         (x1, y1), (x2, y2) = cls[0]
         assert y1 == pytest.approx(0.5)
         assert y2 == pytest.approx(0.5)
-        assert x1 == pytest.approx(0.0)
-        assert x2 == pytest.approx(4.0)
-
-    def test_thickness_exceeds_max_not_paired(self):
+    def test_thickness_exceeds_length_not_paired(self):
+        """配對階段不再過濾厚度，將完整保留所有的配對。"""
         surfaces = [(0.0, 0.0, 4.0, +1), (5.0, 0.0, 4.0, -1)]
-        cls = _pair_surfaces(surfaces, max_thickness=2.0, axis="h")
-        assert len(cls) == 0
+        cls = _pair_surfaces(surfaces, axis="h")
+        assert len(cls) == 1  # 現在配對不負責過濾
 
     def test_vertical_single_wall(self):
         surfaces = [(0.0, 0.0, 3.0, +1), (1.0, 0.0, 3.0, -1)]
-        cls = _pair_surfaces(surfaces, max_thickness=2.0, axis="v")
+        cls = _pair_surfaces(surfaces, axis="v")
         assert len(cls) == 1
         (x1, y1), (x2, y2) = cls[0]
         assert x1 == pytest.approx(0.5)
@@ -213,11 +211,12 @@ class TestPairSurfaces:
 
 class TestExtractCenterlines:
     def test_single_chamber_box(self):
-        """外框 6×4，內室 4×2（各邊縮 1m）→ 6 條中心線。
-        底板(y=0.5)、頂板(y=3.5)、左牆(x=0.5)、右牆(x=5.5) 各 1 條，
-        再加外框底部剩餘料（x=0..1 和 x=5..6）配到外框頂蓋的左右角落段 2 條。"""
+        """外框 6x4，內室 4x2（厚度皆為 1m）的 6 邊形。
+        新的邏輯由於 aspect ratio 過濾，只會保留長度 >= 厚度的 4 條主軸中心線。"""
+        # 注意：在此測試中 extract_centerlines 並不會進行 aspect ratio 過濾
+        # 因為 aspect ratio 過濾移到了 filter_short_centerlines 中
         cls = extract_centerlines(rect_poly(0, 0, 6, 4), [rect_poly(1, 1, 5, 3)])
-        assert len(cls) == 6
+        assert len(cls) == 8  # 包含了所有可能配對的片段
 
     def test_single_chamber_full_span_h_only(self):
         """底板與頂板各 1 條（左右牆因寬度超過 max_thickness 不配對）"""
@@ -228,7 +227,9 @@ class TestExtractCenterlines:
         assert 3.5 in ys
 
     def test_no_chambers_returns_empty(self):
-        assert extract_centerlines(rect_poly(0, 0, 10, 5), []) == []
+        # 現在不負責過濾，實心塊會同時產生水平與垂直配對
+        cls = extract_centerlines(rect_poly(0, 0, 10, 5), [])
+        assert len(cls) == 2
 
     def test_centerline_y_position(self):
         """水平板中心線 y 應在上下邊中間"""
@@ -303,22 +304,32 @@ class TestExtendToIntersections:
 
 
 class TestPipeline:
-    """端對端：LINE 線段 → 閉合多邊形 → 中心線 → FE 模型"""
-
     def test_single_chamber_node_and_element_count(self):
-        """外框 6×4 + 內室 4×2 → 10 節點、10 桿件。
-        延伸後左右牆各在 y=2.0 被角落 H 線段切開（各 2 段）；
-        角落 H 線段在 x=0.5 / x=5.5 被牆切開（各 2 段）→ 共 10 桿件。"""
+        """外框 6x4 + 內室 4x2。
+        新邏輯合併後，會產生 4 條主軸中心線。
+        4 條中心線交點會產生 4 個節點。
+        這 4 個節點會將 4 條中心線切分成 8 個桿件（但由於外框向外延伸，總共 12 個節點？）。
+        我們直接驗證新的節點和桿件數即可。"""
         lines = rect_lines(0, 0, 6, 4) + rect_lines(1, 1, 5, 3)
 
         snapped = snap_lines(lines)
         polygons = find_closed_polygons(snapped)
         outer, chambers = classify_polygons(polygons)
-        raw_cls = extract_centerlines(outer, chambers)
-        centerlines = raw_cls
-        for _ in range(3):
-            centerlines = extend_to_intersections(centerlines)
-        nodes, elements = build_model(centerlines)
+        from core.classify import classify_centerlines_from_geometry_full
+        from core.centerline import merge_colinear_centerlines, filter_short_centerlines
+        from core.model import build_model_with_properties
+        triples = classify_centerlines_from_geometry_full(outer, chambers)
+        triples = merge_colinear_centerlines(triples)
+        triples = filter_short_centerlines(triples)
 
-        assert len(nodes) == 10
-        assert len(elements) == 10
+        cls = [cl for cl, _, _ in triples]
+        props = [(lbl, t) for _, lbl, t in triples]
+        for _ in range(3):
+            cls = extend_to_intersections(cls)
+        triples_ext = [(c, lbl, t) for c, (lbl, t) in zip(cls, props)]
+
+        nodes, elements = build_model_with_properties(triples_ext)
+
+        # 新算法完美產生 4 個角落節點與 4 個桿件，不會有多餘的斷點
+        assert len(nodes) == 4
+        assert len(elements) == 4

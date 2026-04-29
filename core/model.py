@@ -118,6 +118,7 @@ def build_model_with_properties(triples, snap_tol=SNAP_TOL):
         else:
             main_pts.append(pt)
 
+    plat_pts.sort(key=lambda p: (p[0], p[1]))
     ordered_pts = main_pts + plat_pts
     nodes = [(i + 1, p[0], p[1]) for i, p in enumerate(ordered_pts)]
 
@@ -131,7 +132,7 @@ def build_model_with_properties(triples, snap_tol=SNAP_TOL):
         return (node_pos[e[0]][0] + node_pos[e[1]][0]) / 2
 
     main_h = sorted([e for e in horizontals if e[2] != "月台"], key=lambda e: (mid_y(e), mid_x(e)))
-    plat_h = sorted([e for e in horizontals if e[2] == "月台"], key=lambda e: (mid_y(e), mid_x(e)))
+    plat_h = sorted([e for e in horizontals if e[2] == "月台"], key=lambda e: (mid_x(e), mid_y(e)))
     main_v = sorted([e for e in verticals   if e[2] != "月台"], key=lambda e: (mid_x(e), mid_y(e)))
     plat_v = sorted([e for e in verticals   if e[2] == "月台"], key=lambda e: (mid_x(e), mid_y(e)))
 

@@ -83,8 +83,9 @@ def _process_neg_surfaces(by_coord_c, pending, c, axis, result):
     return pending
 
 
-def _pair_surfaces_with_thickness(surfaces, max_thickness, axis):
-    """沿主軸掃描，配對 +1/-1 表面，回傳 [(中心線, 厚度), ...]。"""
+def _pair_surfaces_with_thickness(surfaces, axis):
+    """沿主軸掃描，配對 +1/-1 表面，回傳 [(中心線, 厚度), ...]。
+    移除厚度上限限制，改由長度>=厚度過濾，避免短軸向產生錯誤中心線。"""
     by_coord = defaultdict(list)
     for c, a, b, s in surfaces:
         by_coord[round(c, 4)].append((a, b, s))
@@ -94,7 +95,7 @@ def _pair_surfaces_with_thickness(surfaces, max_thickness, axis):
     pending = []  # [(coord, sec_min, sec_max), ...] 累積中的 +1 表面
 
     for c in sorted_coords:
-        pending = [p for p in pending if c - p[0] <= max_thickness + 1e-6]
+        # 不再用語法 pending = [p for p in pending if c - p[0] <= max_thickness] 移除 pending
         pending = _process_neg_surfaces(by_coord[c], pending, c, axis, result)
         for a, b, s in by_coord[c]:
             if s == +1:
@@ -103,31 +104,34 @@ def _pair_surfaces_with_thickness(surfaces, max_thickness, axis):
     return result
 
 
-def _pair_surfaces(surfaces, max_thickness, axis):
-    """沿主軸由小到大掃描；遇 -1 時與最近 +1（≤ max_thickness）配對成中心線。"""
-    return [cl for cl, _ in _pair_surfaces_with_thickness(surfaces, max_thickness, axis)]
+def _pair_surfaces(surfaces, axis):
+    """沿主軸由小到大掃描；遇 -1 時與最近 +1 配對成中心線。"""
+    return [cl for cl, _ in _pair_surfaces_with_thickness(surfaces, axis)]
+
 
 
 # ==========================================
 # 公開 API：中心線抽取
 # ==========================================
 def extract_centerlines(outer, chambers, max_thickness=MAX_WALL_THICKNESS):
-    """多邊形 → 中心線列表（丟棄厚度資訊）。"""
+    """多邊形 → 中心線列表（丟棄厚度資訊）。
+    註：max_thickness 已不再用於厚度上限限制，保留參數簽名相容性。"""
     if outer is None:
         return []
     h_surfaces, v_surfaces = _extract_surfaces(outer, chambers)
-    return (_pair_surfaces(h_surfaces, max_thickness, axis="h") +
-            _pair_surfaces(v_surfaces, max_thickness, axis="v"))
+    return (_pair_surfaces(h_surfaces, axis="h") +
+            _pair_surfaces(v_surfaces, axis="v"))
 
 
 def extract_centerlines_with_thickness(outer, chambers,
                                        max_thickness=MAX_WALL_THICKNESS):
-    """多邊形 → [(中心線, 厚度), ...] 供 classify_centerlines 使用。"""
+    """多邊形 → [(中心線, 厚度), ...] 供 classify_centerlines 使用。
+    註：max_thickness 已不再用於厚度上限限制，保留參數簽名相容性。"""
     if outer is None:
         return []
     h_surfaces, v_surfaces = _extract_surfaces(outer, chambers)
-    return (_pair_surfaces_with_thickness(h_surfaces, max_thickness, axis="h") +
-            _pair_surfaces_with_thickness(v_surfaces, max_thickness, axis="v"))
+    return (_pair_surfaces_with_thickness(h_surfaces, axis="h") +
+            _pair_surfaces_with_thickness(v_surfaces, axis="v"))
 
 
 # ==========================================
@@ -228,11 +232,17 @@ def merge_colinear_centerlines(triples, gap_tol=None):
         if dy < tol and dx > tol:  # 水平
             fixed = round((cl[0][1] + cl[1][1]) / 2, 3)
             a, b = sorted([cl[0][0], cl[1][0]])
-            groups[("h", fixed, label)].append((a, b, thickness))
+            if thickness <= MAX_WALL_THICKNESS:
+                groups[("h", fixed, label)].append((a, b, thickness))
+            else:
+                groups[("other", id(cl), label)].append((cl, thickness))
         elif dx < tol and dy > tol:  # 垂直
             fixed = round((cl[0][0] + cl[1][0]) / 2, 3)
             a, b = sorted([cl[0][1], cl[1][1]])
-            groups[("v", fixed, label)].append((a, b, thickness))
+            if thickness <= MAX_WALL_THICKNESS:
+                groups[("v", fixed, label)].append((a, b, thickness))
+            else:
+                groups[("other", id(cl), label)].append((cl, thickness))
         else:
             # 非正交線段，原樣保留
             groups[("other", id(cl), label)].append((cl, thickness))
@@ -302,4 +312,20 @@ def filter_short_centerlines(triples, min_length=None):
             for idx, _ in members:
                 to_remove.add(idx)
 
-    return [t for i, t in enumerate(triples) if i not in to_remove]
+    # 過濾 aspect ratio，避免實心塊短軸向產生無效中心線。
+    # 端部短桿件可能因四捨五入或牆厚取樣，略短於推估厚度；保留這類近似正方的構件。
+    # 這裡我們合併後再過濾，確保被內室切斷的長段合併後能正確計算總長度
+    aspect_slack = 0.1
+    filtered_triples = []
+    for i, t in enumerate(triples):
+        if i in to_remove:
+            continue
+        cl, label, thickness = t
+        dx = abs(cl[1][0] - cl[0][0])
+        dy = abs(cl[1][1] - cl[0][1])
+        length = dx if dx > dy else dy
+        # 保留 length 接近或大於 thickness；長度遠小於厚度者多半是錯誤配對。
+        if length + aspect_slack >= thickness - 1e-4:
+            filtered_triples.append(t)
+
+    return filtered_triples
